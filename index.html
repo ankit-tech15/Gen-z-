@@ -1,0 +1,153 @@
+pip install Flask Stripe Flask-SQLAlchemy
+genz_pod_business/
+    ├── app.py
+    ├── models.py
+    ├── templates/
+    │    ├── home.html
+    │    ├── login.html
+    │    ├── product_page.html
+    │    ├── checkout.html
+    ├── static/
+    │    └── styles.css
+    └── .env (for sensitive data like Stripe keys)
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+class Product(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), nullable=False)
+    description = db.Column(db.String(200))
+    price = db.Column(db.Float, nullable=False)
+    image_url = db.Column(db.String(100))
+
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    total_price = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(50), default='Pending')
+    user_id = db.Column(db.Integer, nullable=False)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+from flask import Flask, render_template, redirect, url_for, request, flash, session
+from models import db, Product, Order, User
+import stripe
+from werkzeug.security import generate_password_hash, check_password_hash
+
+app = Flask(__name__)
+app.secret_key = 'your_secret_key_here'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///genz_pod.db'
+stripe.api_key = 'your_stripe_api_key_here'
+
+db.init_app(app)
+
+# Route for Home Page
+@app.route('/')
+def home():
+    products = Product.query.all()
+    return render_template('home.html', products=products)
+
+# Route for Product Details Page
+@app.route('/product/<int:product_id>')
+def product_detail(product_id):
+    product = Product.query.get_or_404(product_id)
+    return render_template('product_page.html', product=product)
+
+# Route for User Registration
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        hashed_password = generate_password_hash(password)
+        new_user = User(username=username, password_hash=hashed_password)
+        db.session.add(new_user)
+        db.session.commit()
+        flash('Registration successful!', 'success')
+        return redirect(url_for('login'))
+    return render_template('register.html')
+
+# Route for User Login
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password_hash, password):
+            session['user_id'] = user.id
+            flash('Login successful!', 'success')
+            return redirect(url_for('home'))
+        flash('Invalid credentials', 'danger')
+    return render_template('login.html')
+
+# Route for Checkout
+@app.route('/checkout', methods=['GET', 'POST'])
+def checkout():
+    if 'user_id' not in session:
+        flash('Please login to proceed with the checkout.', 'danger')
+        return redirect(url_for('login'))
+
+    # Example: The user has added items to their cart
+    cart_items = [{'product': Product.query.get(1), 'quantity': 2}]
+    total_price = sum(item['product'].price * item['quantity'] for item in cart_items)
+
+    if request.method == 'POST':
+        # Handle payment via Stripe
+        stripe.Charge.create(
+            amount=int(total_price * 100),  # Convert to cents
+            currency='usd',
+            source=request.form['stripeToken'],
+            description='Payment for Gen-Z Clothing'
+        )
+
+        # Create Order in DB
+        order = Order(user_id=session['user_id'], product_id=cart_items[0]['product'].id, quantity=cart_items[0]['quantity'], total_price=total_price)
+        db.session.add(order)
+        db.session.commit()
+        flash('Order placed successfully!', 'success')
+        return redirect(url_for('home'))
+
+    return render_template('checkout.html', cart_items=cart_items, total_price=total_price)
+
+if __name__ == '__main__':
+    app.run(debug=True)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gen-Z Clothing</title>
+</head>
+<body>
+    <h1>Welcome to Gen-Z Clothing</h1>
+    <div>
+        {% for product in products %}
+        <div>
+            <img src="{{ product.image_url }}" alt="{{ product.name }}">
+            <h2>{{ product.name }}</h2>
+            <p>{{ product.description }}</p>
+            <p>${{ product.price }}</p>
+            <a href="{{ url_for('product_detail', product_id=product.id) }}">View Product</a>
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ product.name }}</title>
+</head>
+<body>
+    <h1>{{ product.name }}</h1>
+    <img src="{{ product.image_url }}" alt="{{ product.name }}">
+    <p>{{ product.description }}</p>
+    <p>${{ product.price }}</p>
+    <a href="{{ url_for('checkout') }}">Proceed to Checkout</a>
+</body>
+</html>
